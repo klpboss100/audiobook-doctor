@@ -883,16 +883,20 @@ uploaded_file = st.file_uploader(
     key="file_uploader",
     help="TXT, DOCX, PDF 파일을 직접 불러올 수 있습니다"
 )
-if uploaded_file:
+if uploaded_file is not None and st.session_state.get('_loaded_file_sig') != (uploaded_file.name, uploaded_file.size):
+    # 업로더는 파일이 붙어있는 동안 매 재실행마다 uploaded_file을 다시 돌려주므로,
+    # 같은 파일을 계속 다시 읽어 원고칸에 덮어쓰면 사용자가 고친 내용이
+    # 조용히 사라짐 — 실제로 바뀐 파일일 때만 다시 읽음
     try:
-        if uploaded_file.name.endswith('.txt'):
+        name_lower = uploaded_file.name.lower()
+        if name_lower.endswith('.txt'):
             file_text = uploaded_file.read().decode('utf-8', errors='ignore')
-        elif uploaded_file.name.endswith('.docx'):
+        elif name_lower.endswith('.docx'):
             from docx import Document as DocxDoc
             import io
             doc = DocxDoc(io.BytesIO(uploaded_file.read()))
             file_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        elif uploaded_file.name.endswith('.pdf'):
+        elif name_lower.endswith('.pdf'):
             import io
             try:
                 import pymupdf
@@ -902,10 +906,13 @@ if uploaded_file:
                 from pypdf import PdfReader
                 reader = PdfReader(io.BytesIO(uploaded_file.read()))
                 file_text = "\n".join([p.extract_text() or "" for p in reader.pages])
+        else:
+            raise ValueError("지원하지 않는 파일 형식입니다")
         st.session_state['manuscript'] = file_text
+        st.session_state['_loaded_file_sig'] = (uploaded_file.name, uploaded_file.size)
         st.success(f"✅ {uploaded_file.name} 불러오기 완료 ({len(file_text):,}자)")
     except Exception as e:
-        st.error(f"❌ 파일 읽기 오류: {e}. pip install python-docx pypdf 를 실행해 주세요.")
+        st.error(f"❌ 파일 읽기 오류: {e}")
 
 # ── Google Docs 가져오기 (OAuth 계정 연동) ──
 GOOGLE_TOKEN_FILE = "google_token.pickle"
