@@ -350,9 +350,13 @@ def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None,
                 response.candidates[0].content and
                 response.candidates[0].content.parts and
                 response.candidates[0].content.parts[0].inline_data):
-                return to_pcm_bytes(response.candidates[0].content.parts[0].inline_data.data)
+                return to_pcm_bytes(response.candidates[0].content.parts[0].inline_data.data), False
             else:
-                return generate_silence(0.5)
+                # 안전필터 차단·빈 응답 등으로 오디오가 아예 안 옴 — 무음으로
+                # 때우되 "차단돼서 대체된 무음"이라는 걸 호출자가 알 수 있게
+                # 표시함 (예전엔 아무 표시 없이 조용히 무음으로 바뀌어서
+                # 문장이 통째로 사라져도 알 방법이 없었음)
+                return generate_silence(0.5), True
         except Exception as e:
             msg = str(e)
             # 하루 단위 쿼터 소진(예: "...requests_per_day...", 재시도까지 몇 시간)은
@@ -1523,9 +1527,18 @@ if 'tagged_script' in st.session_state:
                     voice_hint = "남성" if seg['speaker'] == "M" else "여성"
                     script = build_single_speaker_script(chunk, voice_hint)
                     seed   = SEED_BASE + chunk_idx
-                    pcm    = call_tts_single(client, script, voice, tts_model, status=status, seed=seed)
+                    if not script.strip():
+                        # 구분선(________) 등 실제 텍스트가 없는 청크 — 빈 문자열로
+                        # TTS를 부르면 API가 오류를 내며 전체 생성이 중단될 수 있어
+                        # 처음부터 무음으로 처리
+                        pcm, blocked = generate_silence(title_pause), False
+                    else:
+                        pcm, blocked = call_tts_single(client, script, voice, tts_model, status=status, seed=seed)
                     meta_entry = {'kind':'audio', 'speaker':seg['speaker'],
-                                   'voice':voice, 'script':script, 'seed':seed}
+                                   'voice':voice, 'script':script, 'seed':seed, 'blocked':blocked}
+                    if blocked:
+                        st.warning(f"⚠️ #{done+1}번 청크 음성 생성이 차단되어(안전필터 등) 무음으로 대체됐습니다 — "
+                                   f"완료 후 '다시 생성'으로 재시도해보세요.")
                     pcm_list.append(pcm)
                     chunk_meta.append(meta_entry)
                     done += 1
@@ -1607,7 +1620,8 @@ if 'tagged_script' in st.session_state:
                     "이상하게 나온 부분만 골라서 다시 생성할 수 있습니다."
                 )
                 labels = [
-                    f"#{i+1}  [{meta[i]['speaker']}]  {meta[i]['script'][:30].replace(chr(10), ' ')}..."
+                    f"{'⚠️ ' if meta[i].get('blocked') else ''}#{i+1}  [{meta[i]['speaker']}]  "
+                    f"{meta[i]['script'][:30].replace(chr(10), ' ')}..."
                     for i in audio_indices
                 ]
                 pick = st.selectbox("다시 생성할 청크", options=list(range(len(audio_indices))),
@@ -1622,9 +1636,12 @@ if 'tagged_script' in st.session_state:
                         with st.spinner("다시 생성 중..."):
                             regen_client = make_client(api_key)
                             new_seed = random.randint(0, 2_000_000_000)
-                            new_pcm = call_tts_single(regen_client, m['script'], m['voice'], tts_model, seed=new_seed)
+                            new_pcm, new_blocked = call_tts_single(regen_client, m['script'], m['voice'], tts_model, seed=new_seed)
+                        if new_blocked:
+                            st.warning("⚠️ 이번에도 음성 생성이 차단되어(안전필터 등) 무음으로 대체됐습니다.")
                         st.session_state['pcm_list'][pick_idx] = new_pcm
                         st.session_state['chunk_meta'][pick_idx]['seed'] = new_seed
+                        st.session_state['chunk_meta'][pick_idx]['blocked'] = new_blocked
                         st.session_state['audio_data'] = merge_to_mp3(st.session_state['pcm_list'])
                         st.success("재생성 완료! 위쪽 오디오가 갱신되었습니다.")
                         st.rerun()
