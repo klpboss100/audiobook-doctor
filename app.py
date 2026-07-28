@@ -1339,8 +1339,11 @@ if 'manuscript_checked' in st.session_state:
             mime="text/plain", use_container_width=True)
     with c2:
         if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True):
-            saved_path = save_to_folder(checked_fname, checked.encode("utf-8"))
-            st.success(f"✅ 저장됨: {saved_path}")
+            try:
+                saved_path = save_to_folder(checked_fname, checked.encode("utf-8"))
+                st.success(f"✅ 저장됨: {saved_path}")
+            except Exception as e:
+                st.error(f"❌ 저장 실패: {e}")
     with c3:
         if st.button("🔄 태그 변환 시작", type="primary",
                      disabled=not api_key, use_container_width=True):
@@ -1406,8 +1409,11 @@ if 'tagged_script' in st.session_state:
             mime="text/plain", use_container_width=True)
     with c2:
         if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True, key="save_tagged_folder"):
-            saved_path = save_to_folder(tagged_fname, edited.encode("utf-8"))
-            st.success(f"✅ 저장됨: {saved_path}")
+            try:
+                saved_path = save_to_folder(tagged_fname, edited.encode("utf-8"))
+                st.success(f"✅ 저장됨: {saved_path}")
+            except Exception as e:
+                st.error(f"❌ 저장 실패: {e}")
     with c3:
         st.caption(f"총 {len(lines)}줄")
 
@@ -1584,8 +1590,11 @@ if 'tagged_script' in st.session_state:
                 mime="audio/mpeg", use_container_width=True)
         with ac2:
             if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True, key="save_mp3_folder"):
-                saved_path = save_to_folder(fname, mp3)
-                st.success(f"✅ 저장됨: {saved_path}")
+                try:
+                    saved_path = save_to_folder(fname, mp3)
+                    st.success(f"✅ 저장됨: {saved_path}")
+                except Exception as e:
+                    st.error(f"❌ 저장 실패: {e}")
 
         # ── 청크별 재생성 (구글 TTS가 가끔 목소리 톤을 다르게 내는 문제 대응) ──
         meta = st.session_state.get('chunk_meta') or []
@@ -1608,13 +1617,16 @@ if 'tagged_script' in st.session_state:
                 st.text_area("이 청크의 스크립트", value=m['script'], height=100,
                               disabled=True, key="regen_script_view")
                 st.audio(merge_to_wav([st.session_state['pcm_list'][pick_idx]]), format="audio/wav")
-                if st.button("🔁 이 부분만 다시 생성", key="regen_btn"):
-                    with st.spinner("다시 생성 중..."):
-                        regen_client = make_client(api_key)
-                        new_seed = random.randint(0, 2_000_000_000)
-                        new_pcm = call_tts_single(regen_client, m['script'], m['voice'], tts_model, seed=new_seed)
-                    st.session_state['pcm_list'][pick_idx] = new_pcm
-                    st.session_state['chunk_meta'][pick_idx]['seed'] = new_seed
-                    st.session_state['audio_data'] = merge_to_mp3(st.session_state['pcm_list'])
-                    st.success("재생성 완료! 위쪽 오디오가 갱신되었습니다.")
-                    st.rerun()
+                if st.button("🔁 이 부분만 다시 생성", key="regen_btn", disabled=not api_key):
+                    try:
+                        with st.spinner("다시 생성 중..."):
+                            regen_client = make_client(api_key)
+                            new_seed = random.randint(0, 2_000_000_000)
+                            new_pcm = call_tts_single(regen_client, m['script'], m['voice'], tts_model, seed=new_seed)
+                        st.session_state['pcm_list'][pick_idx] = new_pcm
+                        st.session_state['chunk_meta'][pick_idx]['seed'] = new_seed
+                        st.session_state['audio_data'] = merge_to_mp3(st.session_state['pcm_list'])
+                        st.success("재생성 완료! 위쪽 오디오가 갱신되었습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 재생성 실패: {e}")
