@@ -32,6 +32,14 @@ MAX_CHUNK_CHARS = 4000  # TTS 1회 호출당 최대 글자수. 짧을수록 API 
                         # 제한에 훨씬 자주 걸림 — 슬라이더로 필요시 낮출 수 있음
 SEED_BASE       = 7     # 생성 시 seed 고정 → 목소리 톤이 매 호출마다 랜덤하게 튀는 것을 완화 (구글 TTS의 알려진 불안정성)
 CONFIG_FILE     = "config.json"
+SAVE_DIR        = r"E:\OneDrive\claude\NOVELDESK\projects\허윤"  # 원고/태그/오디오 파일 저장 폴더 (로컬 전용)
+
+def save_to_folder(filename: str, data: bytes):
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    path = os.path.join(SAVE_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
 
 # 이 책("허윤") 전용 고정 설정 — 남성(M)=Orus, 여성(W)=Aoede
 PROJECT_NAME = "허윤"
@@ -1230,13 +1238,18 @@ if 'manuscript_checked' in st.session_state:
         unsafe_allow_html=True
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
+    checked_fname = f"{project_name}_{chapter_name}_원고.txt"
     with c1:
-        st.download_button("⬇️ 원고 저장",
+        st.download_button("⬇️ 다운로드",
             data=checked.encode("utf-8"),
-            file_name=f"{project_name}_{chapter_name}_원고.txt",
+            file_name=checked_fname,
             mime="text/plain", use_container_width=True)
     with c2:
+        if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True):
+            saved_path = save_to_folder(checked_fname, checked.encode("utf-8"))
+            st.success(f"✅ 저장됨: {saved_path}")
+    with c3:
         if st.button("🔄 태그 변환 시작", type="primary",
                      disabled=not api_key, use_container_width=True):
             with st.status("🤖 태그 변환 중...", expanded=True) as status:
@@ -1250,7 +1263,7 @@ if 'manuscript_checked' in st.session_state:
                 except Exception as e:
                     status.update(label="❌ 오류 발생", state="error")
                     st.error(f"❌ {e}")
-    with c3:
+    with c4:
         if st.button("📋 태그 직접 입력", use_container_width=True):
             st.session_state['direct_input_mode'] = True
             st.session_state.pop('tagged_script', None)
@@ -1292,13 +1305,18 @@ if 'tagged_script' in st.session_state:
         for i, (spk, cnt) in enumerate(sc.items()):
             cols[i % len(cols)].metric(spk, cnt)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
+    tagged_fname = f"{project_name}_{chapter_name}_태그.txt"
     with c1:
-        st.download_button("⬇️ 태그 원고 저장",
+        st.download_button("⬇️ 다운로드",
             data=edited.encode("utf-8"),
-            file_name=f"{project_name}_{chapter_name}_태그.txt",
+            file_name=tagged_fname,
             mime="text/plain", use_container_width=True)
     with c2:
+        if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True, key="save_tagged_folder"):
+            saved_path = save_to_folder(tagged_fname, edited.encode("utf-8"))
+            st.success(f"✅ 저장됨: {saved_path}")
+    with c3:
         st.caption(f"총 {len(lines)}줄")
 
 
@@ -1445,9 +1463,15 @@ if 'tagged_script' in st.session_state:
         gen_txt = f"  |  ⏱️ 제작 소요시간 {format_duration(gen_seconds)}" if gen_seconds is not None else ""
         st.success(f"✅ 완료 — {mb:.1f} MB  |  🎵 오디오 길이 {format_duration(audio_len)}{gen_txt}")
         st.audio(mp3, format="audio/mp3")
-        st.download_button(f"⬇️ {fname} 저장",
-            data=mp3, file_name=fname,
-            mime="audio/mpeg", use_container_width=True)
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            st.download_button(f"⬇️ 다운로드 ({fname})",
+                data=mp3, file_name=fname,
+                mime="audio/mpeg", use_container_width=True)
+        with ac2:
+            if not IS_CLOUD and st.button("📁 폴더에 저장", use_container_width=True, key="save_mp3_folder"):
+                saved_path = save_to_folder(fname, mp3)
+                st.success(f"✅ 저장됨: {saved_path}")
 
         # ── 청크별 재생성 (구글 TTS가 가끔 목소리 톤을 다르게 내는 문제 대응) ──
         meta = st.session_state.get('chunk_meta') or []
