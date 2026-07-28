@@ -303,17 +303,9 @@ def chunk_segment(segment_lines, max_chars=MAX_CHUNK_CHARS):
     return chunks
 
 
-def build_single_speaker_script(lines, voice_hint=""):
+def build_single_speaker_script(lines):
     """TTS 스크립트 생성 (pause 제외)"""
-    parts = []
-    for line in lines:
-        if line.get('emotion') == 'pause':
-            continue
-        if line['emotion'] in ('narration', 'title'):
-            parts.append(line['text'])
-        else:
-            parts.append(line['text'])
-    return "\n".join(parts)
+    return "\n".join(line['text'] for line in lines if line.get('emotion') != 'pause')
 
 
 def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None, seed=None):
@@ -602,15 +594,6 @@ def format_duration(seconds: float) -> str:
         return f"{m}분 {s}초"
     return f"{s}초"
 
-
-def count_total_chunks(lines):
-    total = 0
-    for seg in group_into_segments(lines):
-        total += len(chunk_segment(seg['lines']))
-    return total
-
-
-# ═══════════════════════════════════════════
 
 # ══════════════════════════════════════════
 # 페이지 설정 & CSS
@@ -1161,6 +1144,7 @@ with col_q2:
                  disabled=not manuscript, use_container_width=True):
         st.session_state['manuscript_checked'] = manuscript
         st.session_state.pop('analysis_result', None)
+        st.session_state.pop('checked_display', None)
         st.rerun()
 
 # 품질 검사 결과
@@ -1175,6 +1159,7 @@ if 'analysis_result' in st.session_state and 'manuscript_checked' not in st.sess
     if not issues:
         st.success("✅ 문제없음! 아래 단계로 진행하세요.")
         st.session_state['manuscript_checked'] = st.session_state['analysis_text']
+        st.session_state.pop('checked_display', None)
     else:
         types = [i.get('type','') for i in issues]
         c1, c2, c3, c4 = st.columns(4)
@@ -1226,18 +1211,6 @@ if 'analysis_result' in st.session_state and 'manuscript_checked' not in st.sess
                 st.rerun()
 
         st.markdown("---")
-
-        # ── 직접수정 자동저장 콜백 ─────────────
-        def make_custom_cb(idx, orig_txt):
-            def cb():
-                val = st.session_state.get(f"custom_inp_{idx}", "")
-                acc = st.session_state.get('accepted_fixes', {})
-                if val.strip():
-                    acc[idx] = {'type':'custom','text':val,'original':orig_txt}
-                else:
-                    acc.pop(idx, None)
-                st.session_state['accepted_fixes'] = acc
-            return cb
 
         # ── 이슈 목록 ──────────────────────────
         filtered = [(j, iss) for j, iss in enumerate(issues)
@@ -1326,6 +1299,8 @@ if 'analysis_result' in st.session_state and 'manuscript_checked' not in st.sess
                             accepted[i] = {'type':'custom','text':cust_input,'original':orig}
                             st.session_state['accepted_fixes'] = accepted
                             st.rerun()
+                        else:
+                            st.warning("직접 수정할 내용을 입력해주세요.")
 
         st.markdown("---")
         applied = len(accepted)
@@ -1333,10 +1308,17 @@ if 'analysis_result' in st.session_state and 'manuscript_checked' not in st.sess
         if st.button(f"✅ 검사 완료 → 다음 단계  ({applied}/{total}개 선택됨)",
                      type="primary", use_container_width=True):
             final = st.session_state['analysis_text']
+            missed = 0
             for idx, fix in accepted.items():
                 if fix.get('type') in ('suggestion','custom'):
+                    if fix['original'] not in final:
+                        missed += 1
+                        continue
                     final = final.replace(fix['original'], fix['text'], 1)
             st.session_state['manuscript_checked'] = final
+            st.session_state.pop('checked_display', None)  # 다음 렌더에서 새 값이 반영되도록
+            if missed:
+                st.warning(f"⚠️ {missed}건은 원문에서 정확히 찾지 못해 적용되지 않았습니다.")
             st.rerun()
 
 
@@ -1379,6 +1361,7 @@ if 'manuscript_checked' in st.session_state:
                     tags = EMOTION_TAGS
                     tagged = convert_tags(api_key, checked, tag_model, speakers, tags)
                     st.session_state['tagged_script'] = normalize_tags(tagged)
+                    st.session_state.pop('edited_script', None)  # 다음 렌더에서 새 값이 반영되도록
                     st.session_state.pop('audio_data', None)
                     status.update(label="✅ 태그 변환 완료", state="complete")
                 except Exception as e:
@@ -1399,6 +1382,8 @@ if 'manuscript_checked' in st.session_state:
             if st.button("✅ 확인", type="primary", use_container_width=True):
                 if direct_text.strip():
                     st.session_state['tagged_script'] = normalize_tags(direct_text)
+                    st.session_state.pop('edited_script', None)  # 다음 렌더에서 새 값이 반영되도록
+                    st.session_state.pop('audio_data', None)
                     st.session_state['direct_input_mode'] = False
                     st.rerun()
         with cd2:
@@ -1546,8 +1531,7 @@ if 'tagged_script' in st.session_state:
                 )
                 progress.progress(done / total_chunks)
                 try:
-                    voice_hint = "남성" if seg['speaker'] == "M" else "여성"
-                    script = build_single_speaker_script(chunk, voice_hint)
+                    script = build_single_speaker_script(chunk)
                     seed   = SEED_BASE + chunk_idx
                     if not script.strip():
                         # 구분선(________) 등 실제 텍스트가 없는 청크 — 빈 문자열로
