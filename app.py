@@ -359,15 +359,37 @@ def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None,
                 return generate_silence(0.5), True
         except Exception as e:
             msg = str(e)
-            # 하루 단위 쿼터 소진(예: "...requests_per_day...", 재시도까지 몇 시간)은
-            # 몇 초/몇 분 기다린다고 풀리지 않으므로 재시도 없이 즉시 올려서
-            # 헛되이 20분 넘게 재시도하다 실패하는 것을 방지함
-            is_daily_quota = "per_day" in msg.lower()
-            is_rate_limit = not is_daily_quota and ("429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower())
-            is_server_err = ("500" in msg or "503" in msg or "INTERNAL" in msg
-                              or "UNAVAILABLE" in msg or "DEADLINE_EXCEEDED" in msg
-                              or "timed out" in msg.lower() or "timeout" in msg.lower())
-            if is_daily_quota:
+            msg_l = msg.lower()
+            msg_norm = msg_l.replace("_", "").replace(" ", "")  # "per_day"/"PerDay" 등 표현 차이를 흡수
+
+            # 하루 단위 쿼터 소진은 몇 초/몇 분 기다린다고 풀리지 않으므로
+            # 재시도 없이 즉시 올려서 헛되이 20분 넘게 재시도하다 실패하는 것을 방지함.
+            # 문구가 "...requests_per_day..." 형태가 아니어도(예: camelCase) 잡히도록
+            # 언더스코어·공백을 제거한 정규화 버전에서 찾음
+            is_daily_quota = "perday" in msg_norm
+            # retryDelay가 5분을 넘게 요구하면 문구와 무관하게 같은 취급 (안전망)
+            m = re.search(r"retry[_-]?delay['\"]?\s*[:=]\s*['\"]?(\d+)s", msg, re.IGNORECASE)
+            if m and int(m.group(1)) > 300:
+                is_daily_quota = True
+
+            # 잘못된 키·권한 없음·잘못된 모델명 등은 몇 번을 재시도해도 절대
+            # 성공하지 않으므로 즉시 올림 (예전엔 이런 것도 다른 오류와 똑같이
+            # 최대 7분 넘게 헛재시도한 뒤에야 실패했음)
+            is_permanent = (re.search(r'\b(400|401|403|404)\b', msg) is not None
+                             or "invalidargument" in msg_norm or "permissiondenied" in msg_norm
+                             or "notfound" in msg_norm or "api key not valid" in msg_l)
+
+            is_rate_limit = (not is_daily_quota and not is_permanent
+                              and (re.search(r'\b429\b', msg) is not None
+                                   or "resourceexhausted" in msg_norm or "quota" in msg_l))
+            # "500"/"503" 단순 부분일치는 쿼터 수치(예: quota_value: 1500)나 길이(4500자) 등에
+            # 우연히 포함될 수 있어 단어 경계로 한정
+            is_server_err = (not is_daily_quota and not is_permanent
+                              and (re.search(r'\b(500|503)\b', msg) is not None
+                                   or "internal" in msg_norm or "unavailable" in msg_norm
+                                   or "deadlineexceeded" in msg_norm
+                                   or "timed out" in msg_l or "timeout" in msg_l))
+            if is_daily_quota or is_permanent:
                 raise e
             if (is_rate_limit or is_server_err) and rate_limit_retries < MAX_SERVER_RETRIES:
                 rate_limit_retries += 1
