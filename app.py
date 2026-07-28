@@ -355,10 +355,16 @@ def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None,
                 return generate_silence(0.5)
         except Exception as e:
             msg = str(e)
-            is_rate_limit = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower()
+            # 하루 단위 쿼터 소진(예: "...requests_per_day...", 재시도까지 몇 시간)은
+            # 몇 초/몇 분 기다린다고 풀리지 않으므로 재시도 없이 즉시 올려서
+            # 헛되이 20분 넘게 재시도하다 실패하는 것을 방지함
+            is_daily_quota = "per_day" in msg.lower()
+            is_rate_limit = not is_daily_quota and ("429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower())
             is_server_err = ("500" in msg or "503" in msg or "INTERNAL" in msg
                               or "UNAVAILABLE" in msg or "DEADLINE_EXCEEDED" in msg
                               or "timed out" in msg.lower() or "timeout" in msg.lower())
+            if is_daily_quota:
+                raise e
             if (is_rate_limit or is_server_err) and rate_limit_retries < MAX_SERVER_RETRIES:
                 rate_limit_retries += 1
                 wait_s = 60 if is_rate_limit else 20
@@ -1331,6 +1337,9 @@ if 'tagged_script' in st.session_state:
     st.markdown(step_header("4", "오디오 제작",
                 "생성 완료 후 자동으로 프로젝트명으로 저장"), unsafe_allow_html=True)
 
+    if 'last_gen_error' in st.session_state:
+        st.error(f"❌ {st.session_state.pop('last_gen_error')}")
+
     saved_prog  = load_progress()
     has_progress = saved_prog is not None and saved_prog.get('chapter') == chapter_name
 
@@ -1427,8 +1436,7 @@ if 'tagged_script' in st.session_state:
                     save_idx += 1
                     chunk_idx += 1
                 except Exception as e:
-                    st.error(f"❌ [{seg['speaker']}] {e}")
-                    st.info(f"💾 {done}청크까지 저장됨. [▶️ 이어서 생성]으로 재시작하세요.")
+                    st.session_state['last_gen_error'] = f"[{seg['speaker']}] {e}"
                     error_flag = True
                     break
             if seg['is_title'] and not error_flag:
@@ -1454,6 +1462,12 @@ if 'tagged_script' in st.session_state:
             clear_progress()
             progress.progress(1.0)
             status.markdown(f"🎧 완료! (소요시간 {format_duration(st.session_state['audio_gen_seconds'])})")
+
+        if error_flag:
+            # 화면 위쪽의 진행상황(has_progress)·[이어서 생성] 버튼을 방금 저장된
+            # 값 기준으로 다시 그리기 위해 재실행 — 안 하면 새로고침 전까지
+            # 버튼이 나타나지 않음
+            st.rerun()
 
     if 'audio_data' in st.session_state:
         mp3  = st.session_state['audio_data']
