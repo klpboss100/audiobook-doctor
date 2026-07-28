@@ -41,9 +41,9 @@ def save_to_folder(filename: str, data: bytes):
         f.write(data)
     return path
 
-# 이 책("허윤") 전용 고정 설정 — 남성(M)=Orus, 여성(W)=Aoede
+# 이 책("허윤") 전용 고정 설정 — 내레이션(NA)=Charon, 남성(M)=Orus, 여성(W)=Aoede
 PROJECT_NAME = "허윤"
-FIXED_SPEAKERS = {"M": "Orus", "W": "Aoede"}
+FIXED_SPEAKERS = {"NA": "Charon", "M": "Orus", "W": "Aoede"}
 
 EMOTION_TAGS = "title, narration, warm, calm, serious, emotional, soft, proud, nostalgic, longing, bright, concerned, sad, cheerful, playful, firm, surprised, honest, kind, gentle, teasing, awkward, shy, curious, cold, mysterious, excited, passionate, seductive, breathless, tense, commanding, dignified, formal, sorrowful, earnest, lamenting, resolute, tender, pleading, joyful, mournful, husky, panting, ecstatic, moaning, comforting, strained, crying_out, groaning, climaxing, shouting, inviting, whisper, urgent"
 
@@ -128,15 +128,16 @@ def analyze_manuscript(api_key: str, manuscript: str, model: str,
 # ═══════════════════════════════════════════
 def build_tag_prompt(speakers: dict, tags: str = "") -> str:
     has_na = "NA" in speakers
+    narration_tag = "NA" if has_na else "M"
     speaker_lines = []
     for spk in speakers:
         if spk == "NA":
-            speaker_lines.append("- [M] : 내레이션(지문·묘사) + 모든 남자 대화")
+            speaker_lines.append("- [NA] : 내레이션 전용 (지문·묘사·서술문. 대화문은 절대 포함하지 마세요)")
         elif spk == "M":
-            if has_na:
-                speaker_lines.append("- [M]  : 주인공 외 모든 남자 대화")
-            else:
-                speaker_lines.append("- [M]  : 내레이션(지문·묘사) + 모든 남자 대화")
+            desc = "모든 남자 대화 (주인공 허윤 포함)"
+            if not has_na:
+                desc += " + 내레이션(지문·묘사)"
+            speaker_lines.append(f"- [M]  : {desc}")
         elif spk == "W":
             speaker_lines.append("- [W]  : 모든 여자 대화")
         else:
@@ -161,10 +162,10 @@ def build_tag_prompt(speakers: dict, tags: str = "") -> str:
 {speaker_section}
 
 ## 처리 방법
-1. 챕터 제목 (예: 1장. 제목 / Chapter 1) → [NA] [title]
-2. 내레이션·지문·묘사 → [NA] [narration]
-3. 대화문("...") → 앞뒤 문맥으로 화자 판단
-4. 내레이션과 대화가 섞인 문단 → 반드시 분리
+1. 챕터 제목 (예: 1장. 제목 / Chapter 1) → [{narration_tag}] [title]
+2. 내레이션·지문·묘사 (대화가 아닌 서술문) → [{narration_tag}] [narration]
+3. 대화문("...") → 앞뒤 문맥으로 화자 판단해 [M] 또는 [W]
+4. 내레이션과 대화가 섞인 문단 → 반드시 줄 단위로 분리
 
 ## 감정 태그 목록 (이 목록에서만 선택, 다른 태그 절대 사용 금지)
 {tags}
@@ -190,9 +191,8 @@ def convert_tags(api_key, manuscript, model, speakers, tags=""):
 
 
 def normalize_tags(text: str) -> str:
-    """[NARRATOR]/[NA] → [M] 자동 통일 (2인 화자 기준)"""
-    text = text.replace("[NARRATOR]", "[M]")
-    text = text.replace("[NA]", "[M]")
+    """[NARRATOR] → [NA] 자동 통일"""
+    text = text.replace("[NARRATOR]", "[NA]")
     return text
 
 def parse_tagged_script(text):
@@ -262,11 +262,10 @@ def group_into_segments(lines):
 
 
 def get_voice_for_speaker(spk, speakers):
-    """화자에 맞는 목소리 반환 - M/W 두 개만 사용"""
-    if spk == "W" and "W" in speakers:
-        return speakers["W"]
-    # M, NA, NARRATOR, 기타 모두 → M 목소리
-    return speakers.get("M", "Charon")
+    """화자에 맞는 목소리 반환 - NA/M/W 세 개 사용, 미지정 화자는 M으로 폴백"""
+    if spk in speakers:
+        return speakers[spk]
+    return speakers.get("M", "Orus")
 
 
 def merge_segments_by_voice(segs, speakers):
@@ -669,9 +668,9 @@ with st.sidebar:
     # ── 책 제목 · 성우 (이 책 전용 고정값) ──
     project_name = PROJECT_NAME
     speakers = dict(FIXED_SPEAKERS)
-    m_voice, w_voice = speakers["M"], speakers["W"]
+    na_voice, m_voice, w_voice = speakers["NA"], speakers["M"], speakers["W"]
     st.markdown("<div style='background:linear-gradient(90deg,#0369a1,#0ea5e9);border-radius:8px 8px 0 0;padding:8px 12px;margin-top:6px'><span style='color:white;font-size:13px;font-weight:800'>📁 책 제목 · 🎙️ 성우</span></div><div style='border:2px solid #0369a1;border-top:none;border-radius:0 0 8px 8px;padding:8px 10px;margin-bottom:6px'>", unsafe_allow_html=True)
-    st.markdown(f"**{project_name}** 전용 앱 &nbsp;|&nbsp; 🔵 남(M)=**{m_voice}** &nbsp;·&nbsp; 🔴 여(W)=**{w_voice}**", unsafe_allow_html=True)
+    st.markdown(f"**{project_name}** 전용 앱 &nbsp;|&nbsp; 🎙️ 내레이션(NA)=**{na_voice}** &nbsp;·&nbsp; 🔵 남(M)=**{m_voice}** &nbsp;·&nbsp; 🔴 여(W)=**{w_voice}**", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ── 소설 설정 ────────────────────────
@@ -731,10 +730,10 @@ with st.sidebar:
 구글 계정으로 무료 발급 가능
 
 ---
-**🎙️ 성우 (이 책 전용 고정)**
-- 남(M) = Orus, 여(W) = Aoede
-- 허윤 및 모든 남성 대사·내레이션 = Orus
-- 설란·매창 등 모든 여성 대사 = Aoede
+**🎙️ 성우 (이 책 전용 고정, 3인)**
+- 내레이션(NA) = Charon — 지문·묘사 전용
+- 남(M) = Orus — 허윤 포함 모든 남성 대사
+- 여(W) = Aoede — 설란·매창 등 모든 여성 대사
 
 ---
 **💡 팁**
@@ -775,7 +774,7 @@ with col_title:
     </div>
     """, unsafe_allow_html=True)
     proj_display = f"**{project_name}**" if project_name else "*(프로젝트명 없음)*"
-    st.caption(f"프로젝트: {proj_display}  |  M={m_voice} / W={w_voice}")
+    st.caption(f"프로젝트: {proj_display}  |  NA={na_voice} / M={m_voice} / W={w_voice}")
 with col_reset:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 새로 시작", use_container_width=True):
@@ -1271,7 +1270,7 @@ if 'manuscript_checked' in st.session_state:
 
     if st.session_state.get('direct_input_mode'):
         direct_text = st.text_area("태그 원고 붙여넣기", height=200,
-            placeholder="[M] [narration] 텍스트...\n[W] [bright] 대사...",
+            placeholder="[NA] [narration] 지문·묘사...\n[M] [playful] 허윤 대사...\n[W] [bright] 여성 대사...",
             key="direct_input_text")
         cd1, cd2 = st.columns(2)
         with cd1:
