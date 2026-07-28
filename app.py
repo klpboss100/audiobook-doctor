@@ -9,7 +9,7 @@
 
 import streamlit as st
 import streamlit.components.v1
-import re, io, wave, time, json, os, pickle, random
+import re, io, wave, time, json, os, pickle, random, hashlib, shutil
 import lameenc
 
 # 환경 자동 감지: Streamlit Cloud = /home/appuser
@@ -382,8 +382,7 @@ def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None,
             raise e
 
 
-PROGRESS_DIR  = "progress_chunks"
-PROGRESS_META = "progress_meta.pkl"
+PROGRESS_ROOT = "progress_chunks"  # 챕터별 슬롯(하위 폴더)의 부모 디렉터리
 
 # ─────────────────────────────────────────
 # 예전 방식은 청크 하나를 만들 때마다 "지금까지 만든 오디오 전체"를 통째로
@@ -393,56 +392,135 @@ PROGRESS_META = "progress_meta.pkl"
 # 지금은 새로 만든 조각(오디오 또는 무음) 하나만 파일로 추가 저장하고,
 # 아주 작은 메타 정보만 pickle로 갱신 → 저장 속도가 챕터 길이와 무관하게
 # 항상 일정함.
+#
+# 슬롯은 챕터명(원고 첫 줄)의 해시로 구분됨 — 예전엔 파일명이 고정이라
+# 다른 챕터 작업을 새로 시작하면 이전 챕터의 저장분을 그대로 덮어써
+# 조용히 날려버리는 사고가 있었음(실제로 44청크가 이렇게 사라짐).
 # ─────────────────────────────────────────
+def _slot_dir(chapter: str) -> str:
+    h = hashlib.sha1((chapter or "").encode("utf-8")).hexdigest()[:12]
+    return os.path.join(PROGRESS_ROOT, h)
+
+
+_LEGACY_META = "progress_meta.pkl"  # 챕터 슬롯 도입 이전의 구버전 파일 위치(최상위, 평평한 구조)
+
+
+def _migrate_legacy_progress():
+    """구버전(챕터 구분 없이 파일명 고정) 진행 파일이 남아있으면 새 구조(챕터별
+    슬롯)로 한 번만 옮겨줌 — 이 변경 직전까지 쌓인 실제 작업 데이터를 잃지
+    않기 위함. 실패해도 앱 동작에는 영향 없도록 조용히 넘어감."""
+    if not os.path.exists(_LEGACY_META):
+        return
+    try:
+        with open(_LEGACY_META, "rb") as f:
+            meta = pickle.load(f)
+        chapter = meta.get("chapter", "")
+        new_meta_path = _meta_path(chapter)
+        if os.path.exists(new_meta_path):
+            os.remove(_LEGACY_META)  # 이미 새 구조에도 있으면 구버전 파일만 정리
+            return
+        slot = _slot_dir(chapter)
+        os.makedirs(slot, exist_ok=True)
+        save_count = meta.get("save_count", 0)
+        for i in range(save_count):
+            for ext in (".pcm", ".meta"):
+                src = os.path.join(PROGRESS_ROOT, f"chunk_{i:05d}{ext}")
+                dst = os.path.join(slot, f"chunk_{i:05d}{ext}")
+                if os.path.exists(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+        tmp = new_meta_path + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(meta, f)
+        os.replace(tmp, new_meta_path)
+        # 이관 완료된 구버전 파일만 정리 (혹시 이관 실패한 다른 청크가 남아있어도 보존)
+        os.remove(_LEGACY_META)
+        for i in range(save_count):
+            for ext in (".pcm", ".meta"):
+                src = os.path.join(PROGRESS_ROOT, f"chunk_{i:05d}{ext}")
+                if os.path.exists(os.path.join(slot, f"chunk_{i:05d}{ext}")) and os.path.exists(src):
+                    os.remove(src)
+    except Exception:
+        pass
+
+
+def _meta_path(chapter: str) -> str:
+    return os.path.join(_slot_dir(chapter), "meta.pkl")
+
+
 def save_progress_chunk(save_idx: int, pcm: bytes, meta_entry: dict, done: int, chapter: str,
                          max_chunk_chars: int = None):
-    os.makedirs(PROGRESS_DIR, exist_ok=True)
-    with open(os.path.join(PROGRESS_DIR, f"chunk_{save_idx:05d}.pcm"), "wb") as f:
+    slot = _slot_dir(chapter)
+    os.makedirs(slot, exist_ok=True)
+    with open(os.path.join(slot, f"chunk_{save_idx:05d}.pcm"), "wb") as f:
         f.write(pcm)
-    with open(os.path.join(PROGRESS_DIR, f"chunk_{save_idx:05d}.meta"), "wb") as f:
+    with open(os.path.join(slot, f"chunk_{save_idx:05d}.meta"), "wb") as f:
         pickle.dump(meta_entry, f)
-    with open(PROGRESS_META, "wb") as f:
+    # 임시 파일에 쓴 뒤 원자적으로 교체 — 저장 도중 강제종료돼도
+    # meta.pkl이 반쯤 쓰인 상태로 깨지는 것을 방지
+    meta_path = _meta_path(chapter)
+    tmp_path  = meta_path + ".tmp"
+    with open(tmp_path, "wb") as f:
         pickle.dump({"done": done, "save_count": save_idx + 1, "chapter": chapter,
                      "max_chunk_chars": max_chunk_chars}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, meta_path)
 
 
-def load_progress():
-    """저장된 진행상황 로드"""
-    if not os.path.exists(PROGRESS_META):
+def load_progress(chapter: str):
+    """저장된 진행상황 로드 (해당 챕터의 슬롯에서만)"""
+    _migrate_legacy_progress()
+    meta_path = _meta_path(chapter)
+    if not os.path.exists(meta_path):
         return None
     try:
-        with open(PROGRESS_META, "rb") as f:
+        with open(meta_path, "rb") as f:
             meta = pickle.load(f)
     except Exception:
         return None
+    slot = _slot_dir(chapter)
     pcm_list, chunk_meta = [], []
     save_count = meta.get("save_count", 0)
     for i in range(save_count):
         try:
-            with open(os.path.join(PROGRESS_DIR, f"chunk_{i:05d}.pcm"), "rb") as f:
-                pcm_list.append(f.read())
-            with open(os.path.join(PROGRESS_DIR, f"chunk_{i:05d}.meta"), "rb") as f:
-                chunk_meta.append(pickle.load(f))
+            with open(os.path.join(slot, f"chunk_{i:05d}.pcm"), "rb") as f:
+                pcm = f.read()
+            with open(os.path.join(slot, f"chunk_{i:05d}.meta"), "rb") as f:
+                m = pickle.load(f)
         except Exception:
-            # 파일이 없거나 손상됨 → 그 지점까지만 인정하고 나머지는 다시 생성
-            meta["save_count"] = i
-            meta["done"] = sum(1 for m in chunk_meta if m.get('kind') == 'audio')
+            # pcm/meta 둘 중 하나라도 없거나 손상됨 → 그 지점까지만 인정하고
+            # (pcm_list와 chunk_meta 길이를 항상 같게 유지) 나머지는 다시 생성
             break
+        pcm_list.append(pcm)
+        chunk_meta.append(m)
+    meta["save_count"] = len(pcm_list)
+    meta["done"] = sum(1 for m in chunk_meta if m.get('kind') == 'audio')
     meta["pcm_list"] = pcm_list
     meta["chunk_meta"] = chunk_meta
     return meta
 
 
-def clear_progress():
-    """진행상황 파일 삭제"""
-    if os.path.exists(PROGRESS_META):
-        os.remove(PROGRESS_META)
-    if os.path.isdir(PROGRESS_DIR):
-        for fn in os.listdir(PROGRESS_DIR):
-            try:
-                os.remove(os.path.join(PROGRESS_DIR, fn))
-            except Exception:
-                pass
+def clear_progress(chapter: str):
+    """진행상황 삭제 (해당 챕터 슬롯만 — 다른 챕터 저장분은 건드리지 않음)"""
+    shutil.rmtree(_slot_dir(chapter), ignore_errors=True)
+
+
+def list_other_progress(current_chapter: str):
+    """다른 챕터의 미완료 진행상황 목록 (경고 표시용)"""
+    out = []
+    if not os.path.isdir(PROGRESS_ROOT):
+        return out
+    cur = os.path.basename(_slot_dir(current_chapter))
+    for d in os.listdir(PROGRESS_ROOT):
+        if d == cur:
+            continue
+        try:
+            with open(os.path.join(PROGRESS_ROOT, d, "meta.pkl"), "rb") as f:
+                m = pickle.load(f)
+            out.append(m.get("chapter", "?"))
+        except Exception:
+            pass
+    return out
 
 
 def generate_silence(seconds):
@@ -1340,8 +1418,13 @@ if 'tagged_script' in st.session_state:
     if 'last_gen_error' in st.session_state:
         st.error(f"❌ {st.session_state.pop('last_gen_error')}")
 
-    saved_prog  = load_progress()
+    saved_prog  = load_progress(chapter_name)
     has_progress = saved_prog is not None and saved_prog.get('chapter') == chapter_name
+
+    other_progress = list_other_progress(chapter_name)
+    if other_progress:
+        st.info("💾 다른 챕터의 미완료 작업이 남아있습니다 (그대로 보존됨, 여기서 지워지지 않음): "
+                + ", ".join(f"'{c}'" for c in other_progress))
 
     # 이어서 생성할 때는 저장 당시 사용한 청크 크기를 그대로 써야 오디오-텍스트
     # 정렬이 깨지지 않음 — 슬라이더를 바꿔도 이미 만든 부분은 그대로 재사용됨
@@ -1368,10 +1451,11 @@ if 'tagged_script' in st.session_state:
         st.warning(f"⏸️ 이전 작업: {done_so_far}/{total_chunks} 청크에서 중단됨")
         cb1, cb2 = st.columns(2)
         with cb1:
-            start_btn = st.button("▶️ 이어서 생성", type="primary", use_container_width=True)
+            start_btn = st.button("▶️ 이어서 생성", type="primary",
+                                   disabled=not api_key, use_container_width=True)
         with cb2:
             if st.button("🔄 처음부터", use_container_width=True):
-                clear_progress()
+                clear_progress(chapter_name)
                 st.rerun()
         resume_from = done_so_far if start_btn else None
     else:
@@ -1459,7 +1543,15 @@ if 'tagged_script' in st.session_state:
             st.session_state['pcm_list'] = pcm_list
             st.session_state['chunk_meta'] = chunk_meta
             st.session_state['audio_gen_seconds'] = time.time() - gen_start
-            clear_progress()
+            # done == total_chunks 일 때만 "진짜 완료"로 보고 진행상황을 지움.
+            # 예를 들어 이어서 생성하는 사이 원고가 수정되어 청크 수가 줄어들면
+            # 루프가 남은 게 없다는 이유로 조기 종료되면서 예전 진행상황을
+            # 통째로 삭제해버리는 사고를 방지함
+            if done == total_chunks:
+                clear_progress(chapter_name)
+            else:
+                st.warning(f"⚠️ 생성된 청크 {done}개 ≠ 대본 청크 {total_chunks}개 — "
+                           f"진행상황을 삭제하지 않았습니다. 원고나 태그를 수정하셨다면 확인해주세요.")
             progress.progress(1.0)
             status.markdown(f"🎧 완료! (소요시간 {format_duration(st.session_state['audio_gen_seconds'])})")
 
