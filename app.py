@@ -517,11 +517,13 @@ if st.session_state.pop('_pending_reset', False):
     st.session_state['manuscript'] = ""
 
 def first_line_title(text: str) -> str:
-    """원고 첫 줄을 챕터명으로 사용 (파일명에 부적절한 문자는 제거)"""
+    """원고 첫 줄을 챕터명으로 사용 (파일명에 부적절한 문자·탭 등 제어문자는 공백으로 치환)"""
     for line in (text or "").splitlines():
         line = line.strip()
         if line:
-            return re.sub(r'[\\/:*?"<>|]', '', line)[:60]
+            cleaned = re.sub(r'[\\/:*?"<>|\t\x00-\x1f]', ' ', line)
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            return cleaned[:60]
     return ""
 
 st.markdown("""
