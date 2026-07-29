@@ -879,6 +879,26 @@ with col_reset:
 
 st.divider()
 
+with st.expander("📋 이미 태그 작업된 원고가 있나요? — 1·2단계 건너뛰고 바로 오디오 제작으로"):
+    st.caption("[화자] [감정] 텍스트 형식의 완성된 태그 원고를 붙여넣으면 원고 입력·품질검사 없이 바로 3·4단계로 이동합니다.")
+    skip_tagged_text = st.text_area("",
+        height=150,
+        placeholder="[NA] [title] 제7화 얼음 꽃을 녹이는 온기...\n[NA] [narration] ...\n[M] [playful] 허윤 대사...",
+        label_visibility="collapsed", key="skip_to_tag_input")
+    if st.button("▶️ 3단계로 바로 이동", type="primary",
+                 disabled=not skip_tagged_text.strip(), key="skip_to_tag_btn"):
+        normalized = normalize_tags(skip_tagged_text)
+        parsed_lines = parse_tagged_script(normalized)
+        title_line = next((l['text'] for l in parsed_lines if l['emotion'] == 'title'), None)
+        if not title_line:
+            title_line = next((l['text'] for l in parsed_lines if l['text'].strip()), "무제")
+        st.session_state['manuscript'] = title_line  # 챕터명 자동추출(원고 첫 줄)에 그대로 재사용
+        st.session_state['tagged_script'] = normalized
+        st.session_state.pop('edited_script', None)
+        st.session_state.pop('audio_data', None)
+        st.session_state.pop('manuscript_checked', None)  # 2단계는 건너뛰므로 표시 안 되게
+        st.rerun()
+
 # ══════════════════════════════════════════
 # STEP 1: 원고 입력 & 품질 검사
 # ══════════════════════════════════════════
