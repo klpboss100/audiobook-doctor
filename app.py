@@ -609,6 +609,12 @@ if st.session_state.pop('_pending_reset', False):
         st.session_state.pop(_k, None)
     st.session_state['manuscript'] = ""
 
+# ── 3단계 단축입력이 예약해둔 챕터명(원고칸)을 위젯 생성 전에 반영 ──
+# manuscript 위젯이 이미 그려진 뒤에는 session_state를 직접 못 바꾸므로
+# (StreamlitAPIException), 예약 키에 담아뒀다가 다음 렌더링 맨 앞에서 적용함
+if '_pending_manuscript' in st.session_state:
+    st.session_state['manuscript'] = st.session_state.pop('_pending_manuscript')
+
 def first_line_title(text: str) -> str:
     """원고 첫 줄을 챕터명으로 사용 (파일명에 부적절한 문자·탭 등 제어문자는 공백으로 치환)"""
     for line in (text or "").splitlines():
@@ -1409,7 +1415,7 @@ if 'tagged_script' not in st.session_state:
             title_line = next((l['text'] for l in parsed_lines if l['emotion'] == 'title'), None)
             if not title_line:
                 title_line = next((l['text'] for l in parsed_lines if l['text'].strip()), "무제")
-            st.session_state['manuscript'] = title_line  # 챕터명 자동추출(원고 첫 줄)에 그대로 재사용
+            st.session_state['_pending_manuscript'] = title_line  # 챕터명 자동추출(원고 첫 줄)에 그대로 재사용
             st.session_state['tagged_script'] = normalized
             st.session_state.pop('edited_script', None)
             st.session_state.pop('audio_data', None)
