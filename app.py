@@ -31,6 +31,9 @@ SAMPLE_RATE     = 24000
 MAX_CHUNK_CHARS = 4000  # TTS 1회 호출당 최대 글자수. 짧을수록 API 호출 수가 늘어 분당 요청
                         # 제한에 훨씬 자주 걸림 — 슬라이더로 필요시 낮출 수 있음
 SEED_BASE       = 7     # 생성 시 seed 고정 → 목소리 톤이 매 호출마다 랜덤하게 튀는 것을 완화 (구글 TTS의 알려진 불안정성)
+TTS_PACING_SECONDS = 7  # TTS 호출 사이 최소 간격. 유료(Tier 1) 기준 분당 요청 한도가 모델별로
+                         # 7~10건까지 낮게 잡혀있어(구글 대시보드 실측), 호출을 쉴 새 없이 연달아
+                         # 보내면 걸리기 전에 미리 속도를 늦춰 애초에 429에 덜 걸리게 함
 CONFIG_FILE     = "config.json"
 SAVE_DIR        = r"E:\OneDrive\claude\NOVELDESK\projects\허윤"  # 원고/태그/오디오 파일 저장 폴더 (로컬 전용)
 
@@ -385,7 +388,12 @@ def call_tts_single(client, script, voice_name, tts_model, retry=5, status=None,
                 raise e
             if (is_rate_limit or is_server_err) and rate_limit_retries < MAX_SERVER_RETRIES:
                 rate_limit_retries += 1
-                wait_s = 60 if is_rate_limit else 20
+                if is_rate_limit:
+                    # 분당 요청 한도는 60초 단위로 도는 창이라 짧은 대기는 의미가 없음.
+                    # 반복해서 계속 걸리면(창이 안 풀리고 있다는 뜻) 대기를 조금 늘림
+                    wait_s = 90 if rate_limit_retries > 3 else 60
+                else:
+                    wait_s = 20
                 reason = "API 분당 요청 제한에 걸림" if is_rate_limit else "구글 서버 일시 오류"
                 if status is not None:
                     status.markdown(f"⏳ {reason}. {wait_s}초 대기 후 재시도 ({rate_limit_retries}/{MAX_SERVER_RETRIES})...")
@@ -1566,6 +1574,8 @@ if 'tagged_script' in st.session_state:
                         # 처음부터 무음으로 처리
                         pcm, blocked = generate_silence(title_pause), False
                     else:
+                        if chunk_idx > resume_from:
+                            time.sleep(TTS_PACING_SECONDS)  # 분당 요청 한도에 미리 안 걸리게 호출 간격 확보
                         pcm, blocked = call_tts_single(client, script, voice, tts_model, status=status, seed=seed)
                     meta_entry = {'kind':'audio', 'speaker':seg['speaker'],
                                    'voice':voice, 'script':script, 'seed':seed, 'blocked':blocked}
