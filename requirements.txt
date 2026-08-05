@@ -1,4 +1,5 @@
 streamlit
+starlette<0.41
 google-genai
 python-docx
 pypdf
